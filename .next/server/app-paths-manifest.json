@@ -1,0 +1,8 @@
+{
+  "/head-teacher/page": "app/head-teacher/page.js",
+  "/api/classrooms/route": "app/api/classrooms/route.js",
+  "/api/users/route": "app/api/users/route.js",
+  "/api/averages/route": "app/api/averages/route.js",
+  "/login/page": "app/login/page.js",
+  "/teacher/page": "app/teacher/page.js"
+}
