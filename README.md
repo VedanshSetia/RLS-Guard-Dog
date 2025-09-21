@@ -5,6 +5,10 @@ A comprehensive Next.js 13 application for managing student progress in educatio
 ## Features
 
 - **Role-based Authentication**: Head Teachers, Teachers, and Students with different access levels
+- Login Redirection –
+  Head Teachers → /head-teacher
+  Teachers → /teacher
+  Students → /student
 - **Classroom Management**: Create and manage classrooms
 - **User Management**: Add teachers and students with temporary passwords
 - **Progress Tracking**: Record and view student assignment scores
