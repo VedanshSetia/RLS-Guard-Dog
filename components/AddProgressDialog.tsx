@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { supabase } from '@/lib/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,7 +20,7 @@ import { useToast } from '@/hooks/use-toast'
 interface AddProgressDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSuccess: () => void
+  onSuccess: (newProgress?: any) => void
 }
 
 interface Classroom {
@@ -52,34 +53,28 @@ export function AddProgressDialog({
 
   const fetchClassrooms = async () => {
     try {
-      const response = await fetch('/api/classrooms')
-      const { classrooms: classroomsData } = await response.json()
-      setClassrooms(classroomsData || [])
+      const session = (await supabase.auth.getSession()).data.session;
+      const token = session?.access_token;
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await fetch('/api/classrooms', { headers });
+      const { classrooms: classroomsData } = await response.json();
+      setClassrooms(classroomsData || []);
     } catch (error) {
-      console.error('Error fetching classrooms:', error)
+      console.error('Error fetching classrooms:', error);
     }
   }
 
   const fetchStudents = async (classroomId: string) => {
     try {
-      const response = await fetch(`/api/progress?classroomId=${classroomId}`)
-      const { progress } = await response.json()
-      
-      // Get unique students from progress data
-      const uniqueStudents = new Map()
-      progress?.forEach((p: any) => {
-        if (p.student_id && p.student_name) {
-          uniqueStudents.set(p.student_id, {
-            id: p.student_id,
-            first_name: p.student_name.split(' ')[0],
-            last_name: p.student_name.split(' ').slice(1).join(' '),
-          })
-        }
-      })
-      
-      setStudents(Array.from(uniqueStudents.values()))
+      const session = (await supabase.auth.getSession()).data.session;
+      const token = session?.access_token;
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      // Instead of using progress, fetch students directly from /api/users
+      const response = await fetch(`/api/users?role=student&classroomId=${classroomId}`, { headers });
+      const studentsData = await response.json();
+      setStudents(Array.isArray(studentsData) ? studentsData : []);
     } catch (error) {
-      console.error('Error fetching students:', error)
+      console.error('Error fetching students:', error);
     }
   }
 
@@ -98,15 +93,19 @@ export function AddProgressDialog({
   }, [formData.classroomId])
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
+    e.preventDefault();
+    setLoading(true);
 
     try {
+      const session = (await supabase.auth.getSession()).data.session;
+      const token = session?.access_token;
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
       const response = await fetch('/api/progress', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           studentId: formData.studentId,
           classroomId: formData.classroomId,
@@ -114,23 +113,23 @@ export function AddProgressDialog({
           score: parseInt(formData.score),
           dateRecorded: formData.dateRecorded,
         }),
-      })
+      });
 
-      const data = await response.json()
+      const data = await response.json();
 
       if (!response.ok) {
         toast({
           variant: "destructive",
           title: "Error adding progress",
           description: data.error || 'Failed to add progress',
-        })
-        return
+        });
+        return;
       }
 
       toast({
         title: "Progress added successfully",
         description: "The student's progress has been recorded.",
-      })
+      });
 
       setFormData({
         studentId: '',
@@ -138,17 +137,22 @@ export function AddProgressDialog({
         assignmentName: '',
         score: '',
         dateRecorded: new Date().toISOString().split('T')[0],
-      })
-      onOpenChange(false)
-      onSuccess()
+      });
+      onOpenChange(false);
+      // Pass the new progress entry to the parent for optimistic update
+      if (data && data.progress) {
+        onSuccess(data.progress);
+      } else {
+        onSuccess();
+      }
     } catch (error: any) {
       toast({
         variant: "destructive",
         title: "Error adding progress",
         description: error.message,
-      })
+      });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 

@@ -612,8 +612,14 @@ video {
   margin-top: 0.25rem;
   margin-bottom: 0.25rem;
 }
+.mb-1 {
+  margin-bottom: 0.25rem;
+}
 .mb-4 {
   margin-bottom: 1rem;
+}
+.ml-6 {
+  margin-left: 1.5rem;
 }
 .mr-1 {
   margin-right: 0.25rem;
@@ -623,6 +629,9 @@ video {
 }
 .mt-1 {
   margin-top: 0.25rem;
+}
+.mt-3 {
+  margin-top: 0.75rem;
 }
 .mt-6 {
   margin-top: 1.5rem;
@@ -748,6 +757,9 @@ video {
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
+}
+.list-disc {
+  list-style-type: disc;
 }
 .grid-cols-1 {
   grid-template-columns: repeat(1, minmax(0, 1fr));

@@ -12,6 +12,7 @@ import {
   Plus,
 } from 'lucide-react'
 import { useAuth } from '@/app/components/providers/auth-provider'
+import { supabase } from '@/lib/integrations/supabase/client'
 import { AddProgressDialog } from '@/components/AddProgressDialog'
 
 interface ClassroomInfo {
@@ -19,6 +20,15 @@ interface ClassroomInfo {
   name: string
   student_count: number
   average_score: number
+  students: StudentInfo[]
+}
+
+interface StudentInfo {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  classroom_id?: string
 }
 
 interface StudentProgress {
@@ -41,54 +51,100 @@ export default function TeacherDashboard() {
   })
 
   const fetchTeacherData = async () => {
-    if (!user) return
+    if (!user) return;
 
     try {
+      // Always get a fresh session/token for every API call
+      const getHeaders = async (): Promise<HeadersInit> => {
+        const session = (await supabase.auth.getSession()).data.session;
+        const token = session?.access_token;
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        return headers;
+      };
+
       // Fetch assigned classrooms
-      const classroomsResponse = await fetch('/api/classrooms')
-      const { classrooms: classroomData } = await classroomsResponse.json()
+      const classroomsResponse = await fetch('/api/classrooms', { headers: await getHeaders() });
+      const { classrooms: classroomData } = await classroomsResponse.json();
 
-      // For each classroom, get student count and average score
-      const classroomInfo: ClassroomInfo[] = []
-      
+      // For each classroom, get student count, average score, and students
+      const classroomInfo: ClassroomInfo[] = [];
+
       for (const classroom of classroomData || []) {
-        // Get student count in this classroom
-        const progressResponse = await fetch(`/api/progress?classroomId=${classroom.id}`)
-        const { progress: progressData } = await progressResponse.json()
+        // Get student count and average score from progress
+        const progressResponse = await fetch(`/api/progress?classroomId=${classroom.id}`, { headers: await getHeaders() });
+        const { progress: progressData } = await progressResponse.json();
 
-        const uniqueStudents = new Set(progressData?.map((p: any) => p.student_id) || [])
-        const studentCount = uniqueStudents.size
+        // Fetch all students assigned to this classroom (by classroom_id)
+        let students: StudentInfo[] = [];
+        try {
+          const studentsResponse = await fetch(`/api/users?role=student&classroomId=${classroom.id}`, { headers: await getHeaders() });
+          const studentsJson = await studentsResponse.json();
+          if (Array.isArray(studentsJson)) {
+            students = studentsJson;
+          } else if (studentsJson && typeof studentsJson === 'object') {
+            students = [studentsJson];
+          }
+        } catch (e) {
+          students = [];
+        }
 
-        const averageScore = progressData && progressData.length > 0
-          ? progressData.reduce((sum: number, p: any) => sum + (p.score || 0), 0) / progressData.length
-          : 0
+        // Only include progress where the student's classroom_id matches this classroom (using filtered students)
+        let filteredProgress: any[] = [];
+        if (progressData && progressData.length > 0) {
+          const studentIdsSet = new Set(students.map(s => s.id));
+          filteredProgress = progressData.filter((p: any) => studentIdsSet.has(p.student_id));
+        }
+        const averageScore = filteredProgress.length > 0
+          ? filteredProgress.reduce((sum: number, p: any) => sum + (p.score || 0), 0) / filteredProgress.length
+          : 0;
 
         classroomInfo.push({
           id: classroom.id,
           name: classroom.name,
-          student_count: studentCount,
+          student_count: students.length,
           average_score: averageScore,
-        })
+          students,
+        });
       }
 
-      setClassrooms(classroomInfo)
+      setClassrooms(classroomInfo);
+      // Calculate unique students across all classrooms
+      const uniqueStudentIdsAll = new Set(
+        classroomInfo.flatMap(c => c.students.map(s => s.id))
+      );
       setStats({
         totalClassrooms: classroomInfo.length,
-        totalStudents: classroomInfo.reduce((sum, c) => sum + c.student_count, 0),
-      })
+        totalStudents: uniqueStudentIdsAll.size,
+      });
 
       // Fetch recent progress entries for assigned classrooms
-      const classroomIds = classroomInfo.map(c => c.id)
+      const classroomIds = classroomInfo.map(c => c.id);
       if (classroomIds.length > 0) {
-        const recentProgressResponse = await fetch('/api/progress')
-        const { progress: progressData } = await recentProgressResponse.json()
+        const recentProgressResponse = await fetch('/api/progress', { headers: await getHeaders() });
+        const { progress: progressData } = await recentProgressResponse.json();
 
-        const recentProgressData = progressData?.slice(0, 10) || []
-        setRecentProgress(recentProgressData)
+        // Map progress entries to include student_name and classroom_name
+        const studentsById: Record<string, StudentInfo> = {};
+        classroomInfo.forEach(c => {
+          c.students.forEach(s => {
+            studentsById[s.id] = s;
+          });
+        });
+        const classroomsById: Record<string, ClassroomInfo> = Object.fromEntries(classroomInfo.map(c => [c.id, c]));
+
+        const recentProgressData = (progressData || []).slice(0, 10).map((p: any) => ({
+          ...p,
+          student_name: studentsById[p.student_id]
+            ? `${studentsById[p.student_id].first_name} ${studentsById[p.student_id].last_name}`
+            : 'Unknown Student',
+          classroom_name: classroomsById[p.classroom_id]?.name || 'Unknown Classroom',
+        }));
+        setRecentProgress(recentProgressData);
       }
 
     } catch (error) {
-      console.error('Error fetching teacher data:', error)
+      console.error('Error fetching teacher data:', error);
     }
   }
 
@@ -96,8 +152,23 @@ export default function TeacherDashboard() {
     fetchTeacherData()
   }, [user])
 
-  const onSuccess = () => {
-    fetchTeacherData()
+  // Optimistic update: add new progress entry to recentProgress
+  const onSuccess = (newProgress?: any) => {
+    if (newProgress) {
+      // Enrich the new progress entry with student_name and classroom_name
+      let student_name = 'Unknown Student';
+      let classroom_name = 'Unknown Classroom';
+      const classroom = classrooms.find(c => c.id === newProgress.classroom_id);
+      if (classroom) {
+        classroom_name = classroom.name;
+        const student = classroom.students.find(s => s.id === newProgress.student_id);
+        if (student) {
+          student_name = `${student.first_name} ${student.last_name}`;
+        }
+      }
+      setRecentProgress((prev) => [{ ...newProgress, student_name, classroom_name }, ...prev].slice(0, 10));
+    }
+    fetchTeacherData();
   }
 
   return (
@@ -144,7 +215,7 @@ export default function TeacherDashboard() {
         </Card>
       </div>
 
-      {/* Classroom Performance */}
+      {/* Classroom Performance + Students */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
@@ -152,7 +223,7 @@ export default function TeacherDashboard() {
             My Classroom Performance
           </CardTitle>
           <CardDescription>
-            Average scores for your assigned classrooms
+            Average scores and students for your assigned classrooms
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -161,23 +232,40 @@ export default function TeacherDashboard() {
               No classrooms assigned yet. Contact your head teacher to get classroom assignments.
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-6">
               {classrooms.map((classroom) => (
-                <div key={classroom.id} className="flex items-center justify-between p-4 border rounded-lg">
-                  <div className="flex items-center space-x-4">
-                    <School className="h-5 w-5 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium">{classroom.name}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {classroom.student_count} students
-                      </p>
+                <div key={classroom.id} className="border rounded-lg p-4 mb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-4">
+                      <School className="h-5 w-5 text-muted-foreground" />
+                      <div>
+                        <p className="font-medium">{classroom.name}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {classroom.student_count} students
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-3">
+                      <Badge variant={classroom.average_score >= 85 ? "default" : classroom.average_score >= 70 ? "secondary" : "destructive"}>
+                        {classroom.average_score > 0 ? `${classroom.average_score.toFixed(1)}% avg` : 'No data'}
+                      </Badge>
+                      {classroom.average_score > 0 && <TrendingUp className="h-4 w-4 text-green-500" />}
                     </div>
                   </div>
-                  <div className="flex items-center space-x-3">
-                    <Badge variant={classroom.average_score >= 85 ? "default" : classroom.average_score >= 70 ? "secondary" : "destructive"}>
-                      {classroom.average_score > 0 ? `${classroom.average_score.toFixed(1)}% avg` : 'No data'}
-                    </Badge>
-                    {classroom.average_score > 0 && <TrendingUp className="h-4 w-4 text-green-500" />}
+                  {/* Students List */}
+                  <div className="mt-3">
+                    <p className="font-semibold text-sm mb-1">Students:</p>
+                    {(!Array.isArray(classroom.students) || classroom.students.length === 0) ? (
+                      <span className="text-xs text-muted-foreground">No students assigned to this classroom.</span>
+                    ) : (
+                      <ul className="list-disc ml-6">
+                        {classroom.students.map((student) => (
+                          <li key={student.id} className="text-sm">
+                            {student.first_name} {student.last_name} <span className="text-muted-foreground text-xs">({student.email})</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
               ))}

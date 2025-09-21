@@ -1,5 +1,12 @@
-'use client'
+"use client";
 
+type ClassroomAverage = {
+  id: string;
+  name: string;
+  average: number;
+  totalAssignments: number;
+  studentCount: number;
+};
 import React, { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -17,12 +24,7 @@ import { CreateClassroomDialog } from '@/components/CreateClassroomDialog'
 import { CreateUserDialog } from '@/components/CreateUserDialog'
 import { AssignTeacherDialog } from '@/components/AssignTeacherDialog'
 
-interface ClassroomAverage {
-  classroomId: string
-  classroomName: string
-  average: number
-  totalAssignments: number
-}
+
 
 export default function HeadTeacherDashboard() {
   const { profile, session } = useAuth()
@@ -31,14 +33,14 @@ export default function HeadTeacherDashboard() {
     totalTeachers: 0,
     totalStudents: 0,
   })
+  const [userType, setUserType] = useState<'teacher' | 'student'>('teacher')
+  const [classrooms, setClassrooms] = useState<any[]>([])
   const [teachers, setTeachers] = useState<any[]>([])
   const [students, setStudents] = useState<any[]>([])
-  const [classrooms, setClassrooms] = useState<any[]>([])
   const [classroomAverages, setClassroomAverages] = useState<ClassroomAverage[]>([])
   const [showCreateClassroom, setShowCreateClassroom] = useState(false)
   const [showCreateUser, setShowCreateUser] = useState(false)
   const [showAssignTeacher, setShowAssignTeacher] = useState(false)
-  const [userType, setUserType] = useState<'teacher' | 'student'>('teacher')
 
   const fetchStats = async () => {
     try {
@@ -64,7 +66,7 @@ export default function HeadTeacherDashboard() {
       const teachers = await teachersResponse.json()
       const students = await studentsResponse.json()
 
-      setStats({
+      setStats({ 
         totalClassrooms: Array.isArray(classroomList) ? classroomList.length : 0,
         totalTeachers: Array.isArray(teachers) ? teachers.length : 0,
         totalStudents: Array.isArray(students) ? students.length : 0,
@@ -76,21 +78,54 @@ export default function HeadTeacherDashboard() {
     }
   }
 
+  // Fetch all classrooms, students, and progress, then calculate averages
   const fetchClassroomAverages = async () => {
     try {
-      const response = await fetch('/api/averages')
-      const { averages } = await response.json()
-      
-      setClassroomAverages(averages || [])
+      const headers: HeadersInit = {};
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+      }
+      // Fetch all classrooms
+      const classroomsRes = await fetch('/api/classrooms', { headers });
+      const { classrooms: classroomList } = await classroomsRes.json();
+      if (!Array.isArray(classroomList) || classroomList.length === 0) {
+        setClassroomAverages([]);
+        return;
+      }
+      // Fetch all students (for mapping)
+      const studentsRes = await fetch('/api/users?role=student', { headers });
+      const students = await studentsRes.json();
+      // Fetch all progress for the school
+      const progressRes = await fetch('/api/progress', { headers });
+      const { progress: progressData } = await progressRes.json();
+      // Calculate averages for each classroom
+      const averages: ClassroomAverage[] = classroomList.map((classroom: any) => {
+        // Students assigned to this classroom
+        const classroomStudents = students.filter((s: any) => s.classroom_id === classroom.id);
+        const studentIds = new Set(classroomStudents.map((s: any) => s.id));
+        // Progress for students in this classroom
+        const classroomProgress = (progressData || []).filter((p: any) => p.classroom_id === classroom.id && studentIds.has(p.student_id));
+        const totalAssignments = classroomProgress.length;
+        const average = totalAssignments > 0 ? classroomProgress.reduce((sum: number, p: any) => sum + (p.score || 0), 0) / totalAssignments : 0;
+        return {
+          id: classroom.id,
+          name: classroom.name,
+          average: average,
+          totalAssignments: totalAssignments,
+          studentCount: classroomStudents.length
+        };
+      });
+      setClassroomAverages(averages);
     } catch (error) {
-      console.error('Error fetching classroom averages:', error)
+      console.error('Error calculating classroom averages:', error);
+      setClassroomAverages([]);
     }
   }
 
   useEffect(() => {
-    fetchStats()
-    fetchClassroomAverages()
-  }, [])
+    fetchStats();
+    fetchClassroomAverages();
+  }, []);
 
   const handleCreateUser = (type: 'teacher' | 'student') => {
     setUserType(type)
@@ -98,8 +133,8 @@ export default function HeadTeacherDashboard() {
   }
 
   const onSuccess = () => {
-    fetchStats()
-    fetchClassroomAverages()
+    fetchStats();
+    fetchClassroomAverages();
   }
 
   return (
@@ -233,7 +268,7 @@ export default function HeadTeacherDashboard() {
         </Card>
       </div>
 
-      {/* Classroom Performance Overview (unchanged) */}
+      {/* Classroom Performance Overview (live calculation) */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
@@ -252,21 +287,21 @@ export default function HeadTeacherDashboard() {
           ) : (
             <div className="space-y-4">
               {classroomAverages.map((classroom) => (
-                <div key={classroom.classroomId} className="flex items-center justify-between p-4 border rounded-lg">
+                <div key={classroom.id} className="flex items-center justify-between p-4 border rounded-lg">
                   <div className="flex items-center space-x-4">
                     <School className="h-5 w-5 text-muted-foreground" />
                     <div>
-                      <p className="font-medium">{classroom.classroomName}</p>
+                      <p className="font-medium">{classroom.name}</p>
                       <p className="text-sm text-muted-foreground">
-                        {classroom.totalAssignments} assignments
+                        {classroom.studentCount} students • {classroom.totalAssignments} assignments
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center space-x-3">
                     <Badge variant={classroom.average >= 85 ? "default" : classroom.average >= 70 ? "secondary" : "destructive"}>
-                      {classroom.average.toFixed(1)}% avg
+                      {classroom.average > 0 ? `${classroom.average.toFixed(1)}% avg` : 'No data'}
                     </Badge>
-                    <TrendingUp className="h-4 w-4 text-green-500" />
+                    {classroom.average > 0 && <TrendingUp className="h-4 w-4 text-green-500" />}
                   </div>
                 </div>
               ))}

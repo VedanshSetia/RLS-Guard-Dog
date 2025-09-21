@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase, supabaseAdmin } from '@/lib/integrations/supabase/client'
 
+type UserProfile = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  role: string;
+  school_id: string;
+  classroom_id?: string;
+};
+
 const admin = supabaseAdmin;
 if (!admin) throw new Error('supabaseAdmin is not available server-side');
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const role = searchParams.get('role');
+    const classroomId = searchParams.get('classroomId');
     if (!role || (role !== 'teacher' && role !== 'student')) {
       return NextResponse.json({ error: 'Invalid or missing role' }, { status: 400 });
     }
@@ -23,30 +34,83 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get head teacher's profile and school_id
+    // Get requester's profile and school_id
     const { data: profile } = await admin!
       .from('profiles')
       .select('role, school_id')
       .eq('id', user.id)
       .single();
 
-    if (!profile || profile.role !== 'head_teacher' || !profile.school_id) {
-      return NextResponse.json({ error: 'Only head teachers can fetch users' }, { status: 403 });
+    if (!profile || !profile.school_id) {
+      return NextResponse.json({ error: 'No valid profile or school_id' }, { status: 403 });
     }
 
-    // Fetch users with the requested role in the same school
-    const { data: users, error } = await admin!
-      .from('profiles')
-      .select('id, first_name, last_name, email, role, school_id')
-      .eq('role', role)
-      .eq('school_id', profile.school_id);
+  let users: UserProfile[] = [];
+  let error: any = null;
+    if (profile.role === 'head_teacher') {
+      // Head teachers: all students in school
+      let query = admin!
+        .from('profiles')
+        .select('id, first_name, last_name, email, role, school_id, classroom_id')
+        .eq('role', role)
+        .eq('school_id', profile.school_id);
+      if (role === 'student' && classroomId) {
+        query = query.eq('classroom_id', classroomId);
+      }
+      const res = await query;
+      users = Array.isArray(res.data) ? res.data.map((u: any) => ({
+        id: u.id,
+        first_name: u.first_name ?? '',
+        last_name: u.last_name ?? '',
+        email: u.email ?? '',
+        role: u.role,
+        school_id: u.school_id ?? '',
+        classroom_id: u.classroom_id ?? '',
+      })) : [];
+      error = res.error;
+    } else if (profile.role === 'teacher' && role === 'student') {
+      // Teachers: only students in their assigned classrooms
+      // 1. Get classroom IDs for this teacher
+      const { data: teacherClassrooms } = await admin!
+        .from('teacher_classroom')
+        .select('classroom_id')
+        .eq('teacher_id', user.id);
+      const classroomIds = (teacherClassrooms || []).map(tc => tc.classroom_id);
+      if (classroomIds.length === 0) {
+        users = [];
+      } else {
+        let query = admin!
+          .from('profiles')
+          .select('id, first_name, last_name, email, role, school_id, classroom_id')
+          .eq('role', 'student')
+          .eq('school_id', profile.school_id)
+          .in('classroom_id', classroomIds);
+        if (classroomId) {
+          query = query.eq('classroom_id', classroomId);
+        }
+        const res = await query;
+        users = Array.isArray(res.data) ? res.data.map((u: any) => ({
+          id: u.id,
+          first_name: u.first_name ?? '',
+          last_name: u.last_name ?? '',
+          email: u.email ?? '',
+          role: u.role,
+          school_id: u.school_id ?? '',
+          classroom_id: u.classroom_id ?? '',
+        })) : [];
+        error = res.error;
+      }
+    } else {
+      // Other roles: forbidden
+      return NextResponse.json({ error: 'Not authorized to fetch students' }, { status: 403 });
+    }
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-  // Return users as a flat array for frontend compatibility
-  return NextResponse.json(Array.isArray(users) ? users : []);
+    // Return users as a flat array for frontend compatibility
+    return NextResponse.json(Array.isArray(users) ? users : []);
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -55,8 +119,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   // ...existing code...
   try {
-  const { email, password, role, firstName, lastName, schoolId, mustChangePassword = false } = await request.json()
-  console.log('CreateUserDialog payload:', { email, password, role, firstName, lastName, schoolId, mustChangePassword });
+  const { email, password, role, firstName, lastName, schoolId, mustChangePassword = false, classroomId } = await request.json()
+  console.log('CreateUserDialog payload:', { email, password, role, firstName, lastName, schoolId, mustChangePassword, classroomId });
     if (!email || !password || !role || !firstName || !lastName) {
       return NextResponse.json(
         { error: 'Email, password, role, firstName, and lastName are required' },
@@ -153,17 +217,21 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const profileInsert: any = {
+      id: authData.user.id,
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      role: role, // ensure correct role from request
+      school_id: schoolId || profile.school_id,
+      must_change_password: mustChangePassword,
+    };
+    if (role === 'student' && classroomId) {
+      profileInsert.classroom_id = classroomId;
+    }
     const { error: profileError } = await admin!
       .from('profiles')
-      .insert({
-        id: authData.user.id,
-        email,
-        first_name: firstName,
-        last_name: lastName,
-        role: role, // ensure correct role from request
-        school_id: schoolId || profile.school_id,
-        must_change_password: mustChangePassword,
-      });
+      .insert(profileInsert);
 
     if (profileError) {
       // Clean up the created user if profile creation fails

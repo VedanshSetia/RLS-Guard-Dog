@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,16 +35,47 @@ export function CreateUserDialog({
     password: '',
     firstName: '',
     lastName: '',
+    classroomId: '',
   })
+  const [classrooms, setClassrooms] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const { toast } = useToast()
   const { session } = useAuth()
+
+  // Fetch classrooms for dropdown if student
+  useEffect(() => {
+    if (userType === 'student' && open) {
+      const fetchClassrooms = async () => {
+        try {
+          const headers: HeadersInit = {};
+          if (session?.access_token) {
+            headers['Authorization'] = `Bearer ${session.access_token}`;
+          }
+          const res = await fetch('/api/classrooms', { headers });
+          const data = await res.json();
+          setClassrooms(Array.isArray(data.classrooms) ? data.classrooms : []);
+        } catch (err) {
+          setClassrooms([]);
+        }
+      };
+      fetchClassrooms();
+    }
+  }, [userType, open, session])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
     try {
+      if (userType === 'student' && !formData.classroomId) {
+        toast({
+          variant: "destructive",
+          title: "Classroom required",
+          description: "Please select a classroom for the student.",
+        });
+        setLoading(false);
+        return;
+      }
       const response = await fetch('/api/users', {
         method: 'POST',
         headers: {
@@ -56,40 +87,41 @@ export function CreateUserDialog({
           role: userType,
           mustChangePassword: true,
         }),
-      })
+      });
 
-      const data = await response.json()
+      const data = await response.json();
 
       if (!response.ok) {
         toast({
           variant: "destructive",
           title: "Error creating user",
           description: data.error || 'Failed to create user',
-        })
-        return
+        });
+        return;
       }
 
       toast({
         title: "User created successfully",
         description: `${formData.firstName} ${formData.lastName} has been added as a ${userType}.`,
-      })
+      });
 
       setFormData({
         email: '',
         password: '',
         firstName: '',
         lastName: '',
-      })
-      onOpenChange(false)
-      onSuccess()
+        classroomId: '',
+      });
+      onOpenChange(false);
+      onSuccess();
     } catch (error: any) {
       toast({
         variant: "destructive",
         title: "Error creating user",
         description: error.message,
-      })
+      });
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
@@ -139,6 +171,7 @@ export function CreateUserDialog({
             />
           </div>
 
+
           <div className="space-y-2">
             <Label htmlFor="password">Temporary Password</Label>
             <Input
@@ -153,6 +186,31 @@ export function CreateUserDialog({
               The user will be required to change this password on first login.
             </p>
           </div>
+
+          {/* Classroom selection for students */}
+          {userType === 'student' && (
+            <div className="space-y-2">
+              <Label htmlFor="classroom">Classroom</Label>
+              <Select
+                value={formData.classroomId}
+                onValueChange={(value) => setFormData({ ...formData, classroomId: value })}
+                required
+              >
+                <SelectTrigger id="classroom">
+                  <SelectValue placeholder="Select classroom" />
+                </SelectTrigger>
+                <SelectContent>
+                  {classrooms.length === 0 ? (
+                      <div className="text-muted-foreground px-2 py-1">No classrooms found</div>
+                  ) : (
+                    classrooms.map((c: any) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name || c.classroom_name || c.id}</SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <DialogFooter>
             <Button
